@@ -1,4 +1,5 @@
-requests
 colorama
+curl-cffi
+eth-account
 pytz
-cairosvg
+requests
