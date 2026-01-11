@@ -1,0 +1,8 @@
+token=your_bearer_token_here
+private_key=your_private_key_here
+
+token=another_bearer_token
+private_key=another_private_key
+
+token=third_token
+private_key=third_private_key
