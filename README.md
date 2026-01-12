@@ -1,6 +1,7 @@
 # AixCrypto Auto Bot
 
 🎮 **[Join AixCrypto Hub](https://hub.aixcrypto.ai?invite=N88N2D)** 🎮
+Join to my team : febriyan93
 
 Automated bot for AixCrypto platform that handles daily check-ins, betting sessions, and reward collection.
 
