@@ -261,6 +261,41 @@ class AixCryptoBot:
         except Exception as e:
             self.log(f"Daily Claim Error: {str(e)[:50]}", "ERROR")
 
+    def claim_all_tasks(self, session, session_id):
+        self.log("Processing Claim All Tasks...", "TASK")
+        url = "https://hub.aixcrypto.ai/api/tasks/claim-all"
+        payload = {"sessionId": session_id}
+        
+        try:
+            resp = session.post(url, json=payload)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    claimed_count = data.get("claimedCount", 0)
+                    total_reward = data.get("totalReward", 0)
+                    credits_after = data.get("creditsAfter", "0")
+                    tasks = data.get("tasks", [])
+                    
+                    if claimed_count > 0:
+                        self.log(f"Claim All Success! Tasks: {claimed_count} | Total Reward: +{total_reward}", "SUCCESS")
+                        self.log(f"Credits After: {credits_after}", "INFO")
+                        
+                        for task in tasks:
+                            task_id = task.get("taskId", "N/A")
+                            reward = task.get("reward", 0)
+                            self.log(f"Task ID: {task_id} | Reward: +{reward}", "TASK")
+                    else:
+                        self.log("No tasks to claim", "WARNING")
+                else:
+                    self.log("Claim All Failed (Maybe No Tasks Available)", "WARNING")
+            elif resp.status_code == 400:
+                self.log("Claim All Failed (No Tasks to Claim)", "WARNING")
+            else:
+                self.log(f"Claim All HTTP Error: {resp.status_code}", "ERROR")
+        except Exception as e:
+            self.log(f"Claim All Error: {str(e)[:50]}", "ERROR")
+
     def check_bet_result(self, session, address, round_id):
         url = f"https://hub.aixcrypto.ai/api/game/bet-history?address={address}&page=1&pageSize=10"
         try:
@@ -473,6 +508,9 @@ class AixCryptoBot:
 
                     time.sleep(3)
                     self.start_betting(s, sess_id, addr)
+
+                    time.sleep(3)
+                    self.claim_all_tasks(s, sess_id)
 
                 else:
                     self.log(f"App Login Failed: {login_res.status_code}", "ERROR")
