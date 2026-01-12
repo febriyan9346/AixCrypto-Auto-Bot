@@ -341,6 +341,9 @@ class AixCryptoBot:
 
         self.log(f"Session Complete | Wins: {success_count}", "BET")
 
+    def generate_privy_ca_id(self):
+        return f"{random.randint(0x10000000, 0xffffffff):08x}-{random.randint(0x1000, 0xffff):04x}-{random.randint(0x1000, 0xffff):04x}-{random.randint(0x1000, 0xffff):04x}-{random.randint(0x100000000000, 0xffffffffffff):012x}"
+
     def login_process(self, private_key, proxy=None):
         try:
             if not private_key.startswith("0x"): private_key = "0x" + private_key
@@ -360,42 +363,101 @@ class AixCryptoBot:
                 return
 
             with requests.Session(impersonate="chrome124", proxies=proxies_dict) as s:
+                privy_ca_id = self.generate_privy_ca_id()
+                
                 s.headers.update({
-                    "authority": "auth.privy.io", "content-type": "application/json",
-                    "origin": "https://hub.aixcrypto.ai", "privy-app-id": self.privy_app_id
+                    "authority": "auth.privy.io",
+                    "accept": "application/json",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": "application/json",
+                    "origin": "https://hub.aixcrypto.ai",
+                    "referer": "https://hub.aixcrypto.ai/",
+                    "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    "sec-fetch-dest": "empty",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-site": "cross-site",
+                    "sec-fetch-storage-access": "active",
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                    "privy-app-id": self.privy_app_id,
+                    "privy-ca-id": privy_ca_id,
+                    "privy-client": "react-auth:3.10.1"
                 })
 
-                init_res = s.post("https://auth.privy.io/api/v1/siwe/init", json={"address": addr, "token": captcha_token})
+                init_payload = {"address": addr, "token": captcha_token}
+                init_res = s.post("https://auth.privy.io/api/v1/siwe/init", json=init_payload)
+                
                 if init_res.status_code != 200: 
                     self.log(f"Privy Init Failed: {init_res.status_code}", "ERROR")
+                    try:
+                        error_detail = init_res.json()
+                        self.log(f"Error Detail: {error_detail}", "ERROR")
+                    except:
+                        self.log(f"Response: {init_res.text[:200]}", "ERROR")
                     return
                     
-                nonce = init_res.json()['nonce']
-                issued_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if hasattr(datetime, 'now') and hasattr(timezone, 'utc') else datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                init_data = init_res.json()
+                nonce = init_data['nonce']
+                
+                now = datetime.now(timezone.utc)
+                issued_at = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
                 
                 msg = f"hub.aixcrypto.ai wants you to sign in with your Ethereum account:\n{addr}\n\nBy signing, you are proving you own this wallet and logging in. This does not initiate a transaction or cost any fees.\n\nURI: https://hub.aixcrypto.ai\nVersion: 1\nChain ID: 560048\nNonce: {nonce}\nIssued At: {issued_at}\nResources:\n- https://privy.io"
-                sig = account.sign_message(encode_defunct(text=msg)).signature.hex()
+                
+                message_hash = encode_defunct(text=msg)
+                signed = account.sign_message(message_hash)
+                sig = '0x' + signed.signature.hex() if not signed.signature.hex().startswith('0x') else signed.signature.hex()
 
-                auth_res = s.post("https://auth.privy.io/api/v1/siwe/authenticate", json={
-                    "chainId": "eip155:560048", "connectorType": "injected", "message": msg,
-                    "mode": "login-or-sign-up", "signature": sig, "walletClientType": "metamask"
-                })
+                auth_payload = {
+                    "chainId": "eip155:560048",
+                    "connectorType": "injected",
+                    "message": msg,
+                    "mode": "login-or-sign-up",
+                    "signature": sig,
+                    "walletClientType": "metamask"
+                }
+                
+                auth_res = s.post("https://auth.privy.io/api/v1/siwe/authenticate", json=auth_payload)
                 
                 if auth_res.status_code != 200: 
-                    self.log("Privy Auth Failed", "ERROR")
+                    self.log(f"Privy Auth Failed: {auth_res.status_code}", "ERROR")
+                    try:
+                        error_detail = auth_res.json()
+                        self.log(f"Error Detail: {error_detail}", "ERROR")
+                    except:
+                        self.log(f"Response: {auth_res.text[:200]}", "ERROR")
                     return
                     
-                privy_token = auth_res.json()['token']
+                auth_data = auth_res.json()
+                privy_token = auth_data['token']
 
                 s.cookies.set("privy-token", privy_token, domain="hub.aixcrypto.ai")
                 s.cookies.set("privy-session", "t", domain="hub.aixcrypto.ai")
-                s.headers.update({"authority": "hub.aixcrypto.ai", "privy-app-id": None})
+                
+                s.headers.update({
+                    "authority": "hub.aixcrypto.ai",
+                    "referer": "https://hub.aixcrypto.ai/",
+                    "origin": "https://hub.aixcrypto.ai"
+                })
+                s.headers.pop("privy-app-id", None)
+                s.headers.pop("privy-ca-id", None)
+                s.headers.pop("privy-client", None)
 
                 ts = int(time.time() * 1000)
                 msg_app = f"Sign this message to authenticate with AIxCrypto.\n\nWallet: {addr.lower()}\nTimestamp: {ts}\n\nThis signature will not trigger any blockchain transaction or cost any gas fees."
-                sig_app = account.sign_message(encode_defunct(text=msg_app)).signature.hex()
+                
+                message_hash_app = encode_defunct(text=msg_app)
+                signed_app = account.sign_message(message_hash_app)
+                sig_app = '0x' + signed_app.signature.hex() if not signed_app.signature.hex().startswith('0x') else signed_app.signature.hex()
 
-                login_res = s.post("https://hub.aixcrypto.ai/api/login", json={"address": addr, "message": msg_app, "signature": sig_app})
+                login_payload = {
+                    "address": addr,
+                    "message": msg_app,
+                    "signature": sig_app
+                }
+                
+                login_res = s.post("https://hub.aixcrypto.ai/api/login", json=login_payload)
 
                 if login_res.status_code == 200:
                     data = login_res.json()
@@ -404,6 +466,7 @@ class AixCryptoBot:
                     sess_id = data.get("sessionId")
                     
                     self.log(f"Login Success!", "SUCCESS")
+                    self.log(f"User: {user} | Credits: {creds}", "INFO")
                     
                     time.sleep(2)
                     self.claim_daily(s, sess_id)
@@ -411,12 +474,18 @@ class AixCryptoBot:
                     time.sleep(3)
                     self.start_betting(s, sess_id, addr)
 
-                    self.log(f"User: {user} | Credits: {creds}", "INFO")
                 else:
                     self.log(f"App Login Failed: {login_res.status_code}", "ERROR")
+                    try:
+                        error_detail = login_res.json()
+                        self.log(f"Error Detail: {error_detail}", "ERROR")
+                    except:
+                        self.log(f"Response: {login_res.text[:200]}", "ERROR")
 
         except Exception as e:
             self.log(f"Account Error: {e}", "ERROR")
+            import traceback
+            self.log(f"Traceback: {traceback.format_exc()[:200]}", "ERROR")
 
     def run(self):
         self.load_files()
