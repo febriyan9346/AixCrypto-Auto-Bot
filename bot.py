@@ -296,6 +296,37 @@ class AixCryptoBot:
         except Exception as e:
             self.log(f"Claim All Error: {str(e)[:50]}", "ERROR")
 
+    def get_user_stats(self, session, address):
+        self.log("Fetching User Statistics...", "INFO")
+        url = f"https://hub.aixcrypto.ai/api/user/{address}"
+        
+        try:
+            resp = session.get(url)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                credits = data.get("credits", "0")
+                battery = data.get("battery", 0)
+                total_wins = data.get("totalWins", 0)
+                total_losses = data.get("totalLosses", 0)
+                total_bets = data.get("totalBets", 0)
+                win_rate = data.get("winRate", 0)
+                current_combo = data.get("currentCombo", 0)
+                max_combo = data.get("maxCombo", 0)
+                can_claim_battery = data.get("canClaimDailyBattery", False)
+                
+                self.log(f"Credits: {credits} | Battery: {battery}%", "SUCCESS")
+                self.log(f"Total Bets: {total_bets} | Wins: {total_wins} | Losses: {total_losses}", "INFO")
+                self.log(f"Win Rate: {win_rate:.2f}% | Combo: {current_combo}/{max_combo}", "INFO")
+                
+                if can_claim_battery:
+                    self.log("Daily Battery Available for Claim!", "WARNING")
+                    
+            else:
+                self.log(f"Failed to fetch stats: {resp.status_code}", "ERROR")
+        except Exception as e:
+            self.log(f"Stats Error: {str(e)[:50]}", "ERROR")
+
     def check_bet_result(self, session, address, round_id):
         url = f"https://hub.aixcrypto.ai/api/game/bet-history?address={address}&page=1&pageSize=10"
         try:
@@ -381,7 +412,8 @@ class AixCryptoBot:
 
     def login_process(self, private_key, proxy=None):
         try:
-            if not private_key.startswith("0x"): private_key = "0x" + private_key
+            if not private_key.startswith("0x"): 
+                private_key = "0x" + private_key
             account = Account.from_key(private_key)
             addr = account.address
             
@@ -511,6 +543,9 @@ class AixCryptoBot:
 
                     time.sleep(3)
                     self.claim_all_tasks(s, sess_id)
+
+                    time.sleep(3)
+                    self.get_user_stats(s, addr)
 
                 else:
                     self.log(f"App Login Failed: {login_res.status_code}", "ERROR")
