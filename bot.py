@@ -26,7 +26,7 @@ class AixCryptoBot:
         self.api_key_sctg = ""
         self.accounts = []
         self.proxies = []
-        self.max_bets = 5 
+        self.max_bets = 100
         self.use_proxy = False
         self.solver_type = "2captcha"
         self.market_history = [] 
@@ -154,9 +154,9 @@ class AixCryptoBot:
 
         try:
             input_bet = input(f"{Fore.GREEN}Enter Max Bets per Account : {Style.RESET_ALL}").strip()
-            self.max_bets = int(input_bet) if input_bet else 5
+            self.max_bets = int(input_bet) if input_bet else 100
         except:
-            self.max_bets = 5
+            self.max_bets = 100
             
         print(f"{Fore.CYAN}============================================================{Style.RESET_ALL}")
 
@@ -331,6 +331,29 @@ class AixCryptoBot:
         except Exception as e:
             self.log(f"Daily Claim Error: {str(e)[:50]}", "ERROR")
 
+    def discord_post_task(self, session, session_id):
+        self.log("Processing Discord Post Task...", "TASK")
+        url = "https://hub.aixcrypto.ai/api/tasks/discord-post"
+        payload = {"sessionId": session_id}
+        
+        try:
+            resp = session.post(url, json=payload)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    reward = data.get("reward", 0)
+                    message = data.get("message", "")
+                    self.log(f"Discord Post Success! Reward: +{reward}", "SUCCESS")
+                else:
+                    self.log("Discord Post Failed (Maybe Already Completed)", "WARNING")
+            elif resp.status_code == 400:
+                self.log("Discord Post Failed (Likely Already Completed)", "WARNING")
+            else:
+                self.log(f"Discord Post HTTP Error: {resp.status_code}", "ERROR")
+        except Exception as e:
+            self.log(f"Discord Post Error: {str(e)[:50]}", "ERROR")
+
     def claim_all_tasks(self, session, session_id):
         self.log("Processing Claim All Tasks...", "TASK")
         url = "https://hub.aixcrypto.ai/api/tasks/claim-all"
@@ -360,6 +383,27 @@ class AixCryptoBot:
                 self.log(f"Claim All HTTP Error: {resp.status_code}", "ERROR")
         except Exception as e:
             self.log(f"Claim All Error: {str(e)[:50]}", "ERROR")
+
+    def get_daily_bet_status(self, session, address):
+        url = f"https://hub.aixcrypto.ai/api/game/current-round?address={address}"
+        try:
+            resp = session.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_count = data.get("dailyBetCount", 0)
+                daily_limit = data.get("dailyBetLimit", 100)
+                daily_remaining = data.get("dailyBetRemaining", 0)
+                
+                return {
+                    "count": daily_count,
+                    "limit": daily_limit,
+                    "remaining": daily_remaining,
+                    "completed": daily_remaining == 0
+                }
+            return {"count": 0, "limit": 100, "remaining": 100, "completed": False}
+        except Exception as e:
+            self.log(f"Failed to get bet status: {str(e)[:30]}", "WARNING")
+            return {"count": 0, "limit": 100, "remaining": 100, "completed": False}
 
     def get_user_stats(self, session, address):
         self.log("Fetching User Statistics...", "INFO")
@@ -404,15 +448,29 @@ class AixCryptoBot:
             return "ERROR", 0
 
     def start_betting(self, session, session_id, address):
-        self.log(f"Starting Game Session ({self.max_bets} Rounds)", "BET")
+        bet_status = self.get_daily_bet_status(session, address)
+        
+        current_daily_bets = bet_status["count"]
+        daily_limit = bet_status["limit"]
+        daily_remaining = bet_status["remaining"]
+        is_completed = bet_status["completed"]
+        
+        if is_completed or daily_remaining == 0:
+            self.log(f"Daily Task Already Complete! ({current_daily_bets}/{daily_limit})", "SUCCESS")
+            return
+        
+        remaining_bets = daily_remaining
+        self.log(f"Starting Game Session ({remaining_bets} Rounds)", "BET")
         
         self.fetch_market_history(session, address)
         
         url_bet = "https://hub.aixcrypto.ai/api/game/bet"
         success_count = 0
-        i = 0
+        completed_bets = 0
+        retry_count = 0
+        max_retries = 200
         
-        while i < self.max_bets:
+        while completed_bets < remaining_bets and retry_count < max_retries:
             prediction, reason = self.predict_next_move()
             
             payload = {"prediction": prediction, "sessionId": session_id}
@@ -428,7 +486,7 @@ class AixCryptoBot:
                         daily = data.get("dailyBetCount", "N/A")
                         
                         pred_str = f"{Fore.GREEN}{prediction}{Style.RESET_ALL}" if prediction == "UP" else f"{Fore.RED}{prediction}{Style.RESET_ALL}"
-                        self.log(f"Bet #{i+1} | {pred_str} | AI: {reason}", "AI")
+                        self.log(f"Bet #{completed_bets+1} | {pred_str} | AI: {reason}", "AI")
                         self.log(f"Round ID: {round_id} | Daily: {daily}", "INFO")
                         
                         time.sleep(12) 
@@ -451,29 +509,40 @@ class AixCryptoBot:
                             if len(self.market_history) > 50:
                                 self.market_history.pop(0)
 
-                        i += 1
+                        completed_bets += 1
+                        retry_count = 0
                         
-                        if i < self.max_bets:
+                        if current_daily_bets + completed_bets >= daily_limit:
+                            break
+                        
+                        if completed_bets < remaining_bets:
                             sleep_time = random.randint(3, 5)
                             time.sleep(sleep_time)
                     else:
-                        self.log(f"Bet #{i+1} Failed (API Success False)", "WARNING")
+                        self.log(f"Bet #{completed_bets+1} Failed (API Success False)", "WARNING")
                         time.sleep(5)
 
                 elif resp.status_code == 429:
                     self.log(f"Rate Limit (429)! Sleeping 60s...", "ERROR")
+                    retry_count += 1
                     time.sleep(60)
 
                 elif resp.status_code == 400:
+                    resp_text = resp.text
+                    if "daily bet limit" in resp_text.lower() or "limit reached" in resp_text.lower():
+                        break
                     self.log(f"Round Locked/Closed. Waiting 20s...", "WARNING")
+                    retry_count += 1
                     time.sleep(20)
 
                 else:
-                    self.log(f"Bet #{i+1} Failed Status: {resp.status_code}", "ERROR")
-                    i += 1
+                    self.log(f"Bet #{completed_bets+1} Failed Status: {resp.status_code}", "ERROR")
+                    retry_count += 1
+                    time.sleep(10)
 
-            except Excepion as e:
+            except Exception as e:
                 self.log(f"Bet Error: {str(e)[:30]}", "ERROR")
+                retry_count += 1
                 time.sleep(5)
 
         self.log(f"Session Complete | Wins: {success_count}", "BET")
@@ -601,6 +670,9 @@ class AixCryptoBot:
 
                     time.sleep(3)
                     self.start_betting(s, sess_id, addr)
+
+                    time.sleep(3)
+                    self.discord_post_task(s, sess_id)
 
                     time.sleep(3)
                     self.claim_all_tasks(s, sess_id)
